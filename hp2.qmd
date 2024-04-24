@@ -6,23 +6,265 @@ editor: visual
 embed-resources: true
 ---
 
-## Quarto
+## Introduction
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+I'll be looking into a dataset containing the top 2000 movies on IMDb by rating. This dataset contains these variables:
 
-## Running Code
+**Movie.Name**: Name of the movie
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+**Release.Year**: Year the movie released
+
+**Duration**: Length of the movie in minutes
+
+**IMDB.Rating**: Rating on IMDb
+
+**Metascore**: Metascore Rating
+
+**Votes**: Number of votes
+
+**Genre**: Genre(s) of movie
+
+**Director**: Person who directed the movie
+
+**Cast**: Main actor or actress in the movie
+
+**Gross**: Amount of money that the movie has made
+
+I will be exploring the ratings of movies. FIrst, I'll explore the correlation between IMDb ratings and Metascore. Then, I'll look into how some specific movie attributes might affect or predict ratings, such as the movie's genre and the director of the movie. Finally, I'll take a look into the correlations between the other numerical variables in our dataset and the ratings.
 
 ```{r}
-1 + 1
+library(tidyverse)
+library(tidytext)
+library(knitr)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+movies <- read.csv("imdb_top_2000_movies.csv")
 ```
 
-You can add options to executable code like this
+## IMDB Rating vs Metascore
+
+Let's take a look into the IMDB Rating and how it compares to the Metascore rating for each particular movie. Let's start by taking a quick look at the general statistics of each column
 
 ```{r}
-#| echo: false
-2 * 2
+
+stats_no_na <- na.omit(movies)
+imdb_stats <- summary(stats_no_na$IMDB.Rating)
+metascore_stats <- summary(stats_no_na$Metascore)
+
+stats <- data.frame(
+  Variable = c("IMDb Ratings", "Metascores"),
+  Mean = c(imdb_stats["Mean"], metascore_stats["Mean"]),
+  Median = c(imdb_stats["Median"], metascore_stats["Median"]),
+  Min = c(imdb_stats["Min."], metascore_stats["Min."]),
+  Max = c(imdb_stats["Max."], metascore_stats["Max."])
+)
+
+kable(stats, format = "markdown")
+
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+```{r}
+rating <- na.omit(movies)
+ggplot(rating, aes(x = IMDB.Rating, y = Metascore)) +
+  geom_point() +
+  labs(x = "IMDb Rating", y = "Metascore") +  
+  ggtitle("IMDb Ratings vs. Metascores")
+```
+
+As you can see, there appears to be a positive relationship between IMDb Rating and Metascore. In general, it seems that as one increases, so does the other. But it's not exactly easy to figure out by how much just by looking at this. Let's create a linear regression model that will show us the line of best fit for this data.
+
+```{r}
+
+model <- lm(Metascore ~ IMDB.Rating, data = rating)
+slope <- coef(model)[2] #get slope of line
+
+ggplot(rating, aes(x = IMDB.Rating, y = Metascore)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  
+  labs(x = "IMDb Rating", y = "Metascore") +  
+  ggtitle("IMDb Ratings vs. Metascores")
+
+correlation_coefficient <- cor(rating$IMDB.Rating, rating$Metascore, method = "pearson")
+
+```
+
+Now, we can see clearly that there is a positive relationship. The slope of the regression line is `r unname(slope)` , which represents the rate of change in Metascore for an IMDb rating increase of 1. In other words, when IMDb Rating increases by 1, Metascore increases by `r unname(slope)`. On top of this, we can calculate something called the correlation coefficient to check the strength of the linear relationship. With a correlation coefficient of `r correlation_coefficient`, there is a strong positive linear relationship with these variables.
+
+Now, let's take a look at some of the highest rated movies in each metric, to determine how much agreement there is for the best movies.
+
+```{r}
+top_imdb <- head(movies[order(movies$IMDB.Rating, decreasing = TRUE), ], 50)
+top_metascore <- head(movies[order(movies$Metascore, decreasing = TRUE), ], 50)
+
+
+common_movies <- intersect(top_imdb$Movie.Name, top_metascore$Movie.Name)
+common_movies <- data.frame(common_movies)
+common_movies <- rename(common_movies, "Movie.Name" = "common_movies")
+
+temp <- left_join(common_movies, top_metascore, by = "Movie.Name")
+temp <- left_join(common_movies, top_imdb, by = "Movie.Name")
+
+ratings_only <- select(temp, Movie.Name, IMDB.Rating, Metascore)
+
+kable(ratings_only, format = "markdown")
+
+
+```
+
+There appears to only be 11 movies that are present in both lists. Interestingly, the Metascore is consistenty higher than the IMDB rating, which actually makes a lot of sense. Thinking back to our regression line with a slope of `r unname(slope)`, it makes sense that the high end of Metascores would be higher than the high end of IMDB ratings, as the Metascore increases faster than the IMDB rating.
+
+Now that we've taken a look at the correlation between IMDB score and Metascore, let's take a look into what factors specifically might inform these ratings, starting with genre.
+
+## Genre
+
+```{r}
+# split genre column 
+genre <- movies |>
+  mutate(Genre = strsplit(Genre, ", ")) |>
+  pivot_longer(cols = Genre, values_to = "Genre") |>
+  unnest(cols = Genre) |>
+  select(-name)
+
+genre_summary <- genre |>
+  group_by(Genre) |>
+  summarise(
+    mean_imdb = mean(IMDB.Rating, na.rm = TRUE),
+    med_imdb = median(IMDB.Rating, na.rm = TRUE),
+    mean_meta = mean(Metascore, na.rm = TRUE),
+    med_meta = median(Metascore, na.rm = TRUE),
+    total = n()
+  ) |>
+  arrange(desc(total)) 
+
+kable(genre_summary, format = "markdown")
+
+```
+
+Let's graph it
+
+```{r}
+
+ggplot(genre_summary, aes(x = reorder(Genre, -mean_imdb), y = mean_imdb)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Mean IMDb Ratings by Genre",
+       x = "Genre",
+       y = "Mean IMDb Rating") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+ggplot(genre_summary, aes(x = reorder(Genre, -mean_meta), y = mean_meta)) +
+  geom_bar(stat = "identity", fill = "lightgreen") +
+  labs(title = "Mean Metascores by Genre",
+       x = "Genre",
+       y = "Mean Metascore") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+
+
+```
+
+We can see that IMDB ratings tend to have a lower spread overall by genre than Metascore. Most genres tend to live around the same spot in each graph, as well, with Film-Noir, Documentary, Western, and War all being placed at the top in both. However, it is important to note that both Film-Noir and Documentary had a sample size of under 20, with documentary having just 2.
+
+## Directors
+
+Let's take a look at the directors now. We'll start by creating 2 datasets for each Metascore and IMDB rating, and then summarizing the ratings for each director. We'll only include directors who have done 5 or more total movies as to not skew results so much
+
+```{r}
+imdb_director_summary <- movies |>
+  na.omit() |>
+  group_by(Director) |>
+  summarise(
+    Mean_Metascore = mean(Metascore, na.rm = TRUE),
+    Median_Metascore = median(Metascore, na.rm = TRUE),
+    Mean_IMDb_Rating = mean(IMDB.Rating, na.rm = TRUE),
+    Median_IMDb_Rating = median(IMDB.Rating, na.rm = TRUE),
+    Total_Movies = n()
+  ) |>
+  filter(Total_Movies >= 5) |>
+  arrange(desc(Total_Movies)) 
+
+metascore_director_summary <- movies |>
+  na.omit() |>
+  group_by(Director) |>
+  summarise(
+    Mean_Metascore = mean(Metascore, na.rm = TRUE),
+    Median_Metascore = median(Metascore, na.rm = TRUE),
+    Mean_IMDb_Rating = mean(IMDB.Rating, na.rm = TRUE),
+    Median_IMDb_Rating = median(IMDB.Rating, na.rm = TRUE),
+    Total_Movies = n()
+  ) |>
+  filter(Total_Movies >= 5) |>
+  arrange(desc(Total_Movies))  
+
+imdb_head <- head(imdb_director_summary, 10)
+metascore_head <- head(metascore_director_summary, 10)
+kable(imdb_head, format = "markdown", )
+kable(metascore_head, format = "markdown")
+```
+
+Now that we've got these datasets, let's graph them so we can see just who the best directors are.
+
+```{r}
+
+imdb_director_summary |>
+  top_n(15, Mean_IMDb_Rating) |>
+  ggplot(aes(x = reorder(Director, -Mean_IMDb_Rating), y = Mean_IMDb_Rating)) +
+    geom_bar(stat = "identity", fill = "turquoise") +
+    labs(title = "Mean IMDb Ratings by Director (Directors with Five or More Movies)",
+         x = "Director",
+         y = "Mean IMDb Rating") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+metascore_director_summary |>
+  top_n(15, Mean_Metascore) |>
+  ggplot(aes(x = reorder(Director, -Mean_Metascore), y = Mean_Metascore)) +
+    geom_bar(stat = "identity", fill = "darkgreen") +
+    labs(title = "Mean Metascores by Director (Directors with Five or More Movies)",
+         x = "Director",
+         y = "Mean Metascore") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+
+```
+
+Unlike genre, there's quite a bit of difference between the IMDB ratings and Metascores. It seems as though many directors appear in both charts, however, just in significantly different spots. For instance, Christopher Nolan is second for the IMDb ratings, but 14th for Metascore!
+
+Let's take a look now at the comparison between these directors' mean Metascore and mean IMDb rating.
+
+```{r}
+imdb_director_summary |>
+  ggplot(aes(x = Mean_IMDb_Rating, y = Mean_Metascore, label = Director)) +
+  geom_point(color = "skyblue") +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(title = "IMDb Ratings vs. Metascores for Top Directors",
+       x = "Mean IMDb Rating",
+       y = "Mean Metascore")
+
+
+imdb_lm <- lm(Mean_Metascore ~ Mean_IMDb_Rating, data = imdb_director_summary)
+imdb_slope <- summary(imdb_lm)$coefficients[2, 1]
+
+```
+
+Let's take a look at the slope: `r imdb_slope` . As we'd expect, this slope is very similar to overall slope of the IMDb rating vs Metascore correlation slope of `r unname(slope)`.
+
+## Numerical Data Correlations
+
+Now, let's take a look at the numerical columns and see if we can find any correlation between pure numerical data and ratings.
+
+```{r}
+correlation_df <- movies
+correlation_df$Votes <- as.integer(gsub("[^0-9]", "", movies$Votes))
+correlation_df$Gross <- as.integer(gsub("[^0-9]", "", movies$Gross))
+correlation_df$Release.Year <- as.integer(gsub("[^0-9]", "", movies$Release.Year))
+
+correlation_df <- na.omit(correlation_df)
+
+imdb_correlation <- cor(correlation_df[, c("Release.Year", "Duration", "IMDB.Rating", "Metascore", "Votes", "Gross")])
+
+metascore_correlation <- cor(correlation_df[, c("Release.Year", "Duration", "IMDB.Rating", "Metascore", "Votes", "Gross")])
+
+print(imdb_correlation["IMDB.Rating", ])
+print(metascore_correlation["Metascore", ])
+```
+
+As we can see, there aren't really any strong correlations between any of these variables and the ratings. As we'd expect, the release year isn't necessarily indicative of rating, and is in fact negatively correlated. Nor is the Gross, which is actually a bit surprising to me. In fact, the column with the most correlation is Votes and Duration (apart from the other rating value, which we've already looked at). Overall, though, I don't think any of these are very indicative of what rating the movie will receive.
